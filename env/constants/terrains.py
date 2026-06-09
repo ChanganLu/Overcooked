@@ -1,0 +1,23 @@
+# terrains
+TERRAIN_EMPTY       = 0
+TERRAIN_COUNTER     = 1
+TERRAIN_ONION_DISP  = 2
+TERRAIN_TOMATO_DISP = 3
+TERRAIN_DISH_DISP   = 4
+TERRAIN_POT         = 5
+TERRAIN_SERVE       = 6
+TERRAIN_PLAYER_1    = 7
+TERRAIN_PLAYER_2    = 8
+
+# dict of terrains
+all_terrains = {
+    ' ': TERRAIN_EMPTY,
+    'X': TERRAIN_COUNTER,
+    'O': TERRAIN_ONION_DISP,
+    'T': TERRAIN_TOMATO_DISP,
+    'D': TERRAIN_DISH_DISP,
+    'P': TERRAIN_POT,
+    'S': TERRAIN_SERVE,
+    '1': TERRAIN_PLAYER_1,
+    '2': TERRAIN_PLAYER_2,
+}

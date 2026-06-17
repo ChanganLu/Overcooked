@@ -9,9 +9,8 @@ from collections import defaultdict
 import os
 
 # from overcooked_ai_py.mdp.overcooked_mdp import OvercookedGridworld
-# from overcooked_ai_py.mdp.actions import Action
 # from overcooked_ai_py.mdp.overcooked_env import OvercookedEnv
-from overcooked_ai_py.utils import read_layout_dict
+# from overcooked_ai_py.utils import read_layout_dict
 
 from utils.device import device, autocast, grad_scaler
 from env.constants.actions import all_actions, NORTH, SOUTH, EAST, WEST, STAY, INTERACT, ACTION_INTERACT
@@ -23,7 +22,7 @@ from env.recipes import SoupCookingTime, SoupReward
 from env.state import ParallelState
 
 class ParallelEnvironment:
-    def __init__(self, layout_name: str, batch_size: int = 64, horizon: int = 400, device: torch.device = device, autocast: torch.amp.autocast = autocast):
+    def __init__(self, layout_name: str, batch_size: int = 64, horizon: int = 400, enable_reward_shaping: bool = False, device: torch.device = device, autocast: torch.amp.autocast = autocast):
         '''
         目前不建议使用 tutorial_1 和 tutorial_3 两个 layout
         '''
@@ -36,13 +35,18 @@ class ParallelEnvironment:
         self.autocast = autocast
 
         terrain, soup_cooking_time, soup_reward = self.load_layout(layout_name)
-        self.state = ParallelState(batch_size, terrain, soup_cooking_time, soup_reward).to(device)
+        self.state = ParallelState(batch_size, terrain, soup_cooking_time, soup_reward, enable_reward_shaping).to(device)
 
         self.max_ingredients = self.state.soup_cooking_time.max_ingredients
-        self.timestep = 0
+        self.timestep = horizon
+
+    def read_layout_dict(self, layout_name) -> Dict:
+        layout_path = os.path.join(LAYOUT_DIR, f'{layout_name}.layout')
+        with open(layout_path, 'r') as f:
+            return eval(f.read())
 
     def load_layout(self, layout_name: str) -> Tuple[LongTensor, SoupCookingTime, SoupReward]:
-        layout_dict: Dict = read_layout_dict(layout_name)
+        layout_dict: Dict = self.read_layout_dict(layout_name)
         grid_str: str = layout_dict.get('grid')
         terrain_map = self.parse_grid(grid_str)
         soup_cooking_time, soup_reward = self.parse_soup_dicts(layout_dict)
@@ -92,6 +96,7 @@ class ParallelEnvironment:
                 recipe_times[recipe] = t
 
         recipe_values: Dict[Tuple[int, int], int] = dict()
+        default_value = 20
         if recipe_value_list is not None:
             assert len(all_recipes) == len(recipe_value_list)
             for recipe, v in zip(all_recipes, recipe_value_list):
@@ -100,10 +105,11 @@ class ParallelEnvironment:
             for recipe in all_recipes:
                 if delivery_reward is not None:
                     recipe_values[recipe] = delivery_reward
-                else:
-                    assert onion_value is not None and tomato_value is not None
+                elif onion_value is not None and tomato_value is not None:
                     num_onion, num_tomato = recipe
                     recipe_values[recipe] = num_onion * onion_value + num_tomato * tomato_value
+                else:
+                    recipe_values[recipe] = default_value
         
         if start_bonus_orders is not None:
             for bonus_d in start_bonus_orders:
@@ -125,7 +131,7 @@ class ParallelEnvironment:
         player1_reward, player2_reward = self.state.interact(player1_interact, player2_interact)
         self.state.player_move(player1_action, player2_action)
         self.state.soup_cook()
-        self.timestep += 1
-        done = (self.timestep >= self.horizon)
+        self.timestep -= 1
+        done = (self.timestep <= 0)
         return done, player1_reward, player2_reward, self.state
 

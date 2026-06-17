@@ -1,6 +1,6 @@
 import torch
 from torch import nn, Tensor, LongTensor, BoolTensor
-from typing import List, Tuple, Dict, Optional, Literal
+from typing import List, Tuple, Dict, Optional, Literal, Self
 from dataclasses import dataclass
 
 from env.recipes import SoupCookingTime, SoupReward
@@ -17,20 +17,22 @@ class TensorState:
     def __init__(self,
                  terrains: LongTensor, items: LongTensor, soup_count_down: LongTensor,
                  player1_item: LongTensor, player2_item: LongTensor, player1_position: LongTensor, player2_position: LongTensor, player1_direction: LongTensor, player2_direction: LongTensor,
-                 times: LongTensor, values: LongTensor):
-        self.terrains = terrains.clone()
-        self.items = items.clone()
-        self.soup_count_down = soup_count_down.clone()
-        self.player1_item = player1_item.clone()
-        self.player2_item = player2_item.clone()
-        self.player1_position = player1_position.clone()
-        self.player2_position = player2_position.clone()
-        self.player1_direction = player1_direction.clone()
-        self.player2_direction = player2_direction.clone()
-        self.times = times.clone()
-        self.values = values.clone()
+                 rest_timesteps: int, times: LongTensor, values: LongTensor):
+        device = terrains.device
+        self.terrains = terrains.clone().to(device)
+        self.items = items.clone().to(device)
+        self.soup_count_down = soup_count_down.clone().to(device)
+        self.player1_item = player1_item.clone().to(device)
+        self.player2_item = player2_item.clone().to(device)
+        self.player1_position = player1_position.clone().to(device)
+        self.player2_position = player2_position.clone().to(device)
+        self.player1_direction = player1_direction.clone().to(device)
+        self.player2_direction = player2_direction.clone().to(device)
+        self.rest_timesteps = rest_timesteps
+        self.times = times.clone().to(device)
+        self.values = values.clone().to(device)
 
-    def to(self, device: torch.device) -> None:
+    def to(self, device: torch.device) -> Self:
         self.terrains = self.terrains.to(device)
         self.items = self.items.to(device)
         self.soup_count_down = self.soup_count_down.to(device)
@@ -42,17 +44,18 @@ class TensorState:
         self.player2_direction = self.player2_direction.to(device)
         self.times = self.times.to(device)
         self.values = self.values.to(device)
+        return self
 
-    def cpu(self) -> None: self.to(torch.device('cpu'))
-    def cuda(self) -> None: self.to(torch.device('cuda'))
+    def cpu(self) -> Self: return self.to(torch.device('cpu'))
+    def cuda(self) -> Self: return self.to(torch.device('cuda'))
 
-    def clone(self) -> 'TensorState': return TensorState(self.terrains, self.items, self.soup_count_down, self.player1_item, self.player2_item, self.player1_position, self.player2_position, self.player1_direction, self.player2_direction, self.times, self.values)
-
+    def clone(self) -> 'TensorState': return TensorState(self.terrains, self.items, self.soup_count_down, self.player1_item, self.player2_item, self.player1_position, self.player2_position, self.player1_direction, self.player2_direction, self.rest_timesteps, self.times, self.values)
 
 
 class ParallelState(nn.Module):
-    def __init__(self, batch_size: int, terrain_map: LongTensor, soup_cooking_time: SoupCookingTime, soup_reward: SoupReward):
+    def __init__(self, batch_size: int, terrain_map: LongTensor, soup_cooking_time: SoupCookingTime, soup_reward: SoupReward, enable_reward_shaping: bool = False):
         super().__init__()
+        self.enable_reward_shaping = enable_reward_shaping
 
         H, W = terrain_map.shape
         B = batch_size
@@ -158,11 +161,18 @@ class ParallelState(nn.Module):
                 soup_count_down = player_front_soup_count_down[player_empty_mask] # (E,)
                 holding_items = player_items[player_empty_mask] # (E, 3)
                 E = len(terrain)
+                rewards = torch.zeros_like(terrain)
                 # 1.1 从柜台上拿物品
                 counter_mask = (terrain == TERRAIN_COUNTER) # (E,)
+                counter_dish_mask = (items[:, 0] == ITEM_DISH) # (E,)
                 if counter_mask.any():
                     holding_items[counter_mask] = items[counter_mask]
                     items[counter_mask] = ITEM_EMPTY
+                if self.enable_reward_shaping:
+                    no_dish_on_counter_mask = (self.items[player1_interact, 0][player_empty_mask].sum(dim=(1, 2)) == 0) # (E,)
+                    dish_pickup_useful_mask = torch.logical_and(torch.logical_and(counter_mask, counter_dish_mask), no_dish_on_counter_mask) # (E,)
+                    if dish_pickup_useful_mask.any():
+                        rewards[dish_pickup_useful_mask] = 3
                 # 1.2 从供应器拿物品
                 # a. 洋葱
                 onion_mask = (terrain == TERRAIN_ONION_DISP) # (E,)
@@ -176,6 +186,10 @@ class ParallelState(nn.Module):
                 dish_mask = (terrain == TERRAIN_DISH_DISP) # (E,)
                 if dish_mask.any():
                     holding_items[dish_mask, 0] = ITEM_DISH
+                    if self.enable_reward_shaping:
+                        dish_pickup_useful_mask = torch.logical_and(dish_mask, no_dish_on_counter_mask) # (E,)
+                        if dish_pickup_useful_mask.any():
+                            rewards[dish_pickup_useful_mask] = 3
                 # 1.3 与锅交互开始烹饪
                 pot_mask = (terrain == TERRAIN_POT) # (E,)
                 soup_idle_mask = (soup_count_down == -1) # (E,)
@@ -189,6 +203,7 @@ class ParallelState(nn.Module):
                 player_front_items[player_empty_mask] = items
                 player_front_soup_count_down[player_empty_mask] = soup_count_down
                 player_items[player_empty_mask] = holding_items
+                player_rewards[player_empty_mask] = rewards
             # 2. 玩家手持物品
             player_holding_mask = torch.logical_not(player_empty_mask) # (I,)
             if player_holding_mask.any():
@@ -217,6 +232,8 @@ class ParallelState(nn.Module):
                     holding_items[can_add_onion_mask] = ITEM_EMPTY
                     items[can_add_onion_mask, 0] = ITEM_SOUP
                     items[can_add_onion_mask, 1] += 1
+                    if self.enable_reward_shaping:
+                        rewards[can_add_onion_mask] = 3
                 # a.2 添加番茄
                 player_tomato_mask = (holding_items[:, 0] == ITEM_TOMATO) # (H,)
                 can_add_tomato_mask = torch.logical_and(can_add_ingredient_mask, player_tomato_mask) # (H,)
@@ -224,6 +241,8 @@ class ParallelState(nn.Module):
                     holding_items[can_add_tomato_mask] = ITEM_EMPTY
                     items[can_add_tomato_mask, 0] = ITEM_SOUP
                     items[can_add_tomato_mask, 2] += 1
+                    if self.enable_reward_shaping:
+                        rewards[can_add_tomato_mask] = 3
                 # b. 盛汤
                 holding_dish_mask = (holding_items[:, 0] == ITEM_DISH) # (H,)
                 soup_finish_mask = (soup_count_down == 0) # (H,)
@@ -232,6 +251,8 @@ class ParallelState(nn.Module):
                     holding_items[can_get_soup_mask] = items[can_get_soup_mask]
                     items[can_get_soup_mask] = ITEM_EMPTY
                     soup_count_down[can_get_soup_mask] = -1
+                    if self.enable_reward_shaping:
+                        rewards[can_get_soup_mask] = 5
                 # 2.3 与上菜点交互
                 serve_mask = (terrain == TERRAIN_SERVE) # (H,)
                 holding_soup_mask = (holding_items[:, 0] == ITEM_SOUP) # (H,)
@@ -269,11 +290,18 @@ class ParallelState(nn.Module):
                 soup_count_down = player_front_soup_count_down[player_empty_mask] # (E,)
                 holding_items = player_items[player_empty_mask] # (E, 3)
                 E = len(terrain)
+                rewards = torch.zeros_like(terrain)
                 # 1.1 从柜台上拿物品
                 counter_mask = (terrain == TERRAIN_COUNTER) # (E,)
+                counter_dish_mask = (items[:, 0] == ITEM_DISH) # (E,)
                 if counter_mask.any():
                     holding_items[counter_mask] = items[counter_mask]
                     items[counter_mask] = ITEM_EMPTY
+                if self.enable_reward_shaping:
+                    no_dish_on_counter_mask = (self.items[player2_interact, 0][player_empty_mask].sum(dim=(1, 2)) == 0) # (E,)
+                    dish_pickup_useful_mask = torch.logical_and(torch.logical_and(counter_mask, counter_dish_mask), no_dish_on_counter_mask) # (E,)
+                    if dish_pickup_useful_mask.any():
+                        rewards[dish_pickup_useful_mask] = 3
                 # 1.2 从供应器拿物品
                 # a. 洋葱
                 onion_mask = (terrain == TERRAIN_ONION_DISP) # (E,)
@@ -287,6 +315,10 @@ class ParallelState(nn.Module):
                 dish_mask = (terrain == TERRAIN_DISH_DISP) # (E,)
                 if dish_mask.any():
                     holding_items[dish_mask, 0] = ITEM_DISH
+                    if self.enable_reward_shaping:
+                        dish_pickup_useful_mask = torch.logical_and(dish_mask, no_dish_on_counter_mask) # (E,)
+                        if dish_pickup_useful_mask.any():
+                            rewards[dish_pickup_useful_mask] = 3
                 # 1.3 与锅交互开始烹饪
                 pot_mask = (terrain == TERRAIN_POT) # (E,)
                 soup_idle_mask = (soup_count_down == -1) # (E,)
@@ -300,6 +332,7 @@ class ParallelState(nn.Module):
                 player_front_items[player_empty_mask] = items
                 player_front_soup_count_down[player_empty_mask] = soup_count_down
                 player_items[player_empty_mask] = holding_items
+                player_rewards[player_empty_mask] = rewards
             # 2. 玩家手持物品
             player_holding_mask = torch.logical_not(player_empty_mask) # (I,)
             if player_holding_mask.any():
@@ -328,6 +361,8 @@ class ParallelState(nn.Module):
                     holding_items[can_add_onion_mask] = ITEM_EMPTY
                     items[can_add_onion_mask, 0] = ITEM_SOUP
                     items[can_add_onion_mask, 1] += 1
+                    if self.enable_reward_shaping:
+                        rewards[can_add_onion_mask] = 3
                 # a.2 添加番茄
                 player_tomato_mask = (holding_items[:, 0] == ITEM_TOMATO) # (H,)
                 can_add_tomato_mask = torch.logical_and(can_add_ingredient_mask, player_tomato_mask) # (H,)
@@ -335,6 +370,8 @@ class ParallelState(nn.Module):
                     holding_items[can_add_tomato_mask] = ITEM_EMPTY
                     items[can_add_tomato_mask, 0] = ITEM_SOUP
                     items[can_add_tomato_mask, 2] += 1
+                    if self.enable_reward_shaping:
+                        rewards[can_add_tomato_mask] = 3
                 # b. 盛汤
                 holding_dish_mask = (holding_items[:, 0] == ITEM_DISH) # (H,)
                 soup_finish_mask = (soup_count_down == 0) # (H,)
@@ -343,6 +380,8 @@ class ParallelState(nn.Module):
                     holding_items[can_get_soup_mask] = items[can_get_soup_mask]
                     items[can_get_soup_mask] = ITEM_EMPTY
                     soup_count_down[can_get_soup_mask] = -1
+                    if self.enable_reward_shaping:
+                        rewards[can_get_soup_mask] = 5
                 # 2.3 与上菜点交互
                 serve_mask = (terrain == TERRAIN_SERVE) # (H,)
                 holding_soup_mask = (holding_items[:, 0] == ITEM_SOUP) # (H,)
@@ -368,10 +407,10 @@ class ParallelState(nn.Module):
         cooking_mask = (self.soup_count_down > 0)
         self.soup_count_down[cooking_mask] -= 1
 
-    def to_tensor(self) -> TensorState:
+    def to_tensor(self, rest_timesteps: int) -> TensorState:
         return TensorState(
             self.terrains, self.items, self.soup_count_down,
             self.player1_item, self.player2_item, self.player1_position, self.player2_position, self.player1_direction, self.player2_direction,
-            self.soup_cooking_time.to_tensor(), self.soup_reward.to_tensor()
+            rest_timesteps, self.soup_cooking_time.to_tensor(), self.soup_reward.to_tensor()
         )
 

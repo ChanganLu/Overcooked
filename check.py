@@ -1,13 +1,22 @@
 import torch
+from utils.device import device
+from env.environment import ParallelEnvironment
+from env.constants.layouts import ASYMMETRIC_ADVANTAGES_TOMATO
 
-# A = torch.randint(0, 10, (10, 3))
-# B = torch.randint(0, 3, (10,))
+env = ParallelEnvironment(ASYMMETRIC_ADVANTAGES_TOMATO)
+soup_reward = env.state.soup_reward
 
-# C = torch.gather(A, 1, B.unsqueeze(1)).squeeze(1)
-# D = A[torch.arange(0, 10), B]
-
-# print(torch.cat([A, B.unsqueeze(1), C.unsqueeze(1), D.unsqueeze(1)], dim=1))
-
-A = torch.randint(0, 10, (64, 6))
-B = torch.argmax(A, dim=1)
-print(A.shape, B.shape)
+recipes = torch.tensor([
+    [0, 0],
+    [0, 1],
+    [0, 2],
+    [0, 3],
+    [1, 0],
+    [1, 1],
+    [1, 2],
+    [2, 0],
+    [2, 1],
+    [3, 0]
+], device=device, dtype=torch.long)
+values = soup_reward.get_recipe_values(recipes)
+print(torch.cat([recipes, values.unsqueeze(1)], dim=1))

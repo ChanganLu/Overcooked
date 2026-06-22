@@ -24,7 +24,7 @@ from env.state import ParallelState
 class ParallelEnvironment:
     def __init__(self, layout_name: str, batch_size: int = 64, horizon: int = 400, enable_reward_shaping: bool = False, device: torch.device = device, autocast: torch.amp.autocast = autocast):
         '''
-        目前不建议使用 tutorial_1 和 tutorial_3 两个 layout
+        目前建议从 `env.constants.layouts.all_available_layouts` 中挑选 layout
         '''
         assert layout_name not in ['tutorial_1', 'tutorial_3'], f'不支持的 layout: {layout_name}'
 
@@ -125,13 +125,13 @@ class ParallelEnvironment:
         return soup_cooking_time, soup_reward
 
     @torch.no_grad()
-    def step(self, player1_action: LongTensor, player2_action: LongTensor) -> Tuple[bool, Tensor, Tensor, ParallelState]:
+    def step(self, player1_action: LongTensor, player2_action: LongTensor) -> Tuple[bool, LongTensor, LongTensor, LongTensor, LongTensor, ParallelState]:
         player1_interact = (player1_action == ACTION_INTERACT)
         player2_interact = (player2_action == ACTION_INTERACT)
-        player1_reward, player2_reward = self.state.interact(player1_interact, player2_interact)
+        player1_reward, player2_reward, player1_shaped_reward, player2_shaped_reward = self.state.interact(player1_interact, player2_interact)
         self.state.player_move(player1_action, player2_action)
         self.state.soup_cook()
         self.timestep -= 1
         done = (self.timestep <= 0)
-        return done, player1_reward, player2_reward, self.state
+        return done, player1_reward, player2_reward, player1_shaped_reward, player2_shaped_reward, self.state
 

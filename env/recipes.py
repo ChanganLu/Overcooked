@@ -142,8 +142,8 @@ class SoupReward(nn.Module):
             return torch.full((B,), fill_value=self.delivery_reward, dtype=torch.long, device=device)
         values = torch.full((B,), fill_value=self.default_value, dtype=torch.long, device=device)
         if self.recipe_values is not None:
-            encoded = recipes[:, 0] * self.M + recipes[:, 1]  # (B,)
-            indices = torch.searchsorted(self.recipes_encoded, encoded)  # (B,)
+            recipes_encoded = recipes[:, 0] * self.M + recipes[:, 1]  # (B,)
+            indices = torch.searchsorted(self.recipes_encoded, recipes_encoded)  # (B,)
             valid = indices < len(self.recipes_encoded)
             is_same = (recipes[valid] == self.recipes[indices[valid]]).all(dim=1)
             valid[valid.clone()] = is_same

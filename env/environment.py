@@ -87,7 +87,7 @@ class ParallelEnvironment:
                 else: raise ValueError(f'Unknown ingredient: {ing}')
             all_recipes.append((num_onion, num_tomato))
 
-        if recipe_time_list is None or cook_time is None:
+        if recipe_time_list is None or cook_time is not None:
             recipe_times = None
         else:
             assert len(all_recipes) == len(recipe_time_list)

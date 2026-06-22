@@ -24,7 +24,7 @@ class SoupCookingTime(nn.Module):
             self.recipe_times = None
         else:
             recipes = torch.tensor(tuple(recipe_times.keys()), dtype=torch.long)
-            times = torch.tensor(tuple(recipe_times.items()), dtype=torch.long)
+            times = torch.tensor(tuple(recipe_times.values()), dtype=torch.long)
             M = recipes.max().item() + 1
             recipes_encoded = recipes[:, 0] * M + recipes[:, 1]
             indices = torch.argsort(recipes_encoded)

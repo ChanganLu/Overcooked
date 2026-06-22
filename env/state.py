@@ -105,21 +105,16 @@ class ParallelState(nn.Module):
         player1_step = self.action_directions[player1_action] # (B, 2)
         player2_step = self.action_directions[player2_action] # (B, 2)
 
-        player1_can_move_mask = torch.ones_like(player1_action, dtype=torch.bool) # (B,)
-        player2_can_move_mask = torch.ones_like(player2_action, dtype=torch.bool) # (B,)
-
         player1_new_position = self.player1_position + player1_step # (B, 2)
-        # player1_new_position[0].clamp_(min=0, max=self.H-1)
-        # player1_new_position[1].clamp_(min=0, max=self.W-1)
         player2_new_position = self.player2_position + player2_step # (B, 2)
-        # player2_new_position[0].clamp_(min=0, max=self.H-1)
-        # player2_new_position[1].clamp_(min=0, max=self.W-1)
 
         # 检查是否碰到障碍
-        player1_can_enter_mask = self.terrains[arange, player1_new_position[:, 1], player1_new_position[:, 0]] == TERRAIN_EMPTY
-        player2_can_enter_mask = self.terrains[arange, player2_new_position[:, 1], player2_new_position[:, 0]] == TERRAIN_EMPTY
-        player1_can_move_mask.logical_and_(player1_can_enter_mask)
-        player2_can_move_mask.logical_and_(player2_can_enter_mask)
+        player1_can_not_enter_mask = self.terrains[arange, player1_new_position[:, 1], player1_new_position[:, 0]] != TERRAIN_EMPTY
+        player2_can_not_enter_mask = self.terrains[arange, player2_new_position[:, 1], player2_new_position[:, 0]] != TERRAIN_EMPTY
+
+        # 阻挡碰到障碍物的玩家
+        player1_new_position[player1_can_not_enter_mask] = self.player1_position[player1_can_not_enter_mask]
+        player2_new_position[player2_can_not_enter_mask] = self.player2_position[player2_can_not_enter_mask]
 
         # 检查玩家是否相撞(到达同一位置或交换位置)
         player_collision_mask = (player1_new_position == player2_new_position).all(dim=1)
@@ -127,14 +122,10 @@ class ParallelState(nn.Module):
         player_collision_mask.logical_or_(player_swap_mask)
         player_not_collision_mask = player_collision_mask.logical_not_()
 
-        # 整合可移动的玩家
-        player1_can_move_mask.logical_and_(player_not_collision_mask)
-        player2_can_move_mask.logical_and_(player_not_collision_mask)
-
         # 更新玩家位置和方向
-        self.player1_position[player1_can_move_mask] = player1_new_position[player1_can_move_mask]
+        self.player1_position[player_not_collision_mask] = player1_new_position[player_not_collision_mask]
         self.player1_direction[player1_move_mask] = player1_step[player1_move_mask]
-        self.player2_position[player2_can_move_mask] = player2_new_position[player2_can_move_mask]
+        self.player2_position[player_not_collision_mask] = player2_new_position[player_not_collision_mask]
         self.player2_direction[player2_move_mask] = player2_step[player2_move_mask]
 
     @torch.no_grad()

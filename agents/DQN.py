@@ -1,6 +1,7 @@
 import torch
 from torch import nn, Tensor, LongTensor
 from torch.nn import functional as F
+import random
 
 from tqdm import tqdm
 
@@ -12,8 +13,8 @@ from modules.networks import ActionNet
 
 
 class DQNAgent(BaseAgent):
-    def __init__(self, learning_rate: float = 1e-3, gamma: float = 0.99, epsilon: float = 0.2, target_update: int = 10, buffer_capacity: int = 1024, num_samples: int = 8):
-        super().__init__(buffer_capacity, num_samples)
+    def __init__(self, learning_rate: float = 1e-3, gamma: float = 0.9, epsilon: float = 0.8, target_update: int = 64, buffer_capacity: int = 256, num_samples: int = 8, batch_size: int = 256, horizon: int = 400):
+        super().__init__(buffer_capacity, num_samples, batch_size, horizon)
         self.gamma = gamma
         self.epsilon = epsilon
         self.target_update = target_update
@@ -31,77 +32,71 @@ class DQNAgent(BaseAgent):
 
     def select_actions(self, state: TensorState, evaluate: bool) -> LongTensor:
         B = len(state.items)
-        if evaluate:
-            return torch.randint(0, self.num_joint_actions, (B,), dtype=torch.long, device=device)
-        else:
+        if evaluate or random.random() < self.epsilon:
             with torch.no_grad():
                 with autocast:
                     q_values: Tensor = self.active_net(state)
             return torch.argmax(q_values, dim=1)
+        else:
+            return torch.randint(0, self.num_joint_actions, (B,), dtype=torch.long, device=device)
 
     def train_step(self) -> float:
         if len(self.buffer.buffer) < self.num_samples: return 0.0
 
+        B = self.batch_size
+        N = self.horizon
+        chunk_size = 24
+        num_chunks = (N + chunk_size - 1) // chunk_size
+
         self.train()
         samples = self.buffer.sample(self.num_samples)
-        avg_loss = 0.0
+        total_loss = 0.0
+        pbar = tqdm(total = self.num_samples * num_chunks, desc='Training Network [Loss = ??.??????]', dynamic_ncols=True, leave=False)
 
-        pbar = tqdm(total = self.num_samples * len(samples[0][2]), desc='Training Network [Loss = ??.??????]', dynamic_ncols=True, leave=False)
-
-        for state_list, action_list, reward_list in samples:
-            states = state_list[0].clone().to(device)
-            arange = torch.arange(0, len(states.items), dtype=torch.long, device=device)
-            sample_loss = 0.0
-            horizon = len(action_list)
-            for i in range(horizon):
-                actions = action_list[i].clone().to(device)
-                rewards = reward_list[i].clone().to(device).float() * self.active_net.state_encoder.value_scale
-                next_states = state_list[i + 1].clone().to(device)
+        for all_states, all_actions, all_rewards in samples:
+            for chunk_id in torch.randperm(num_chunks).tolist():
+                chunk_id: int
+                beg = chunk_id * chunk_size * B
+                end = min((chunk_id + 1) * chunk_size, N) * B
+                is_last = end == B * N
+                
+                states = all_states[beg:end].to(device)
+                actions = all_actions[beg:end].to(device)
+                rewards = all_rewards[beg:end].to(device) * self.active_net.state_encoder.value_scale
+                next_states = all_states[beg+B:end].to(device) if is_last else all_states[beg+B:end+B].to(device)
 
                 self.optimizer.zero_grad()
-
-                q_values: Tensor = self.active_net(states)
-                action_q = q_values[arange, actions]
 
                 with torch.no_grad():
                     next_q_values: Tensor = self.stable_net(next_states)
                     next_max_q = next_q_values.max(dim=1).values
-                    target_q = rewards + self.gamma * next_max_q * float(i < len(action_list) - 1)
-            
-                loss = F.mse_loss(action_q, target_q)
+                    if is_last:
+                        target_q_values = rewards.clone()
+                        target_q_values[:-B] += self.gamma * next_max_q
+                    else:
+                        target_q_values = rewards + self.gamma * next_max_q
+
+                q_values: Tensor = self.active_net(states)
+                action_q_values = q_values.gather(1, actions.unsqueeze(1)).squeeze(1)
                 
+                loss = F.mse_loss(action_q_values, target_q_values)
                 loss.backward()
+                
+                torch.nn.utils.clip_grad_norm_(self.active_net.parameters(), max_norm=1.0)
                 self.optimizer.step()
 
-                # with autocast:
-                #     q_values: Tensor = self.active_net(states)
-                #     action_q = q_values[arange, actions]
-
-                #     with torch.no_grad():
-                #         next_q_values: Tensor = self.stable_net(next_states)
-                #         next_max_q = next_q_values.max(dim=1).values
-                #         target_q = rewards + self.gamma * next_max_q * float(i < len(action_list) - 1)
-                
-                #     loss = F.mse_loss(action_q, target_q)
-                
-                # grad_scaler.scale(loss).backward()
-                # grad_scaler.step(self.optimizer)
-                # grad_scaler.update()
-
                 loss_item = loss.item()
-                sample_loss += loss_item / horizon
+                total_loss += loss_item * (end - beg)
                 pbar.set_description(f'Training Network [Loss = {loss_item:9.6f}]')
                 pbar.update()
-                
-                states = next_states
-            
-            self.update_counter += 1
-            if self.update_counter % self.target_update == 0:
-                self.stable_net.load_state_dict(self.active_net.state_dict())
-            
-            avg_loss += sample_loss / self.num_samples
+
+                self.update_counter += 1
+                if self.update_counter % self.target_update == 0:
+                    self.stable_net.load_state_dict(self.active_net.state_dict())
+                    self.stable_net.eval()
         
         pbar.close()
+        avg_loss = total_loss / (self.num_samples * B * N)
         return avg_loss
 
     def get_state_dict(self):

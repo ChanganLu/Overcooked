@@ -17,20 +17,35 @@ class TensorState:
     def __init__(self,
                  terrains: LongTensor, items: LongTensor, soup_count_down: LongTensor,
                  player1_item: LongTensor, player2_item: LongTensor, player1_position: LongTensor, player2_position: LongTensor, player1_direction: LongTensor, player2_direction: LongTensor,
-                 rest_timesteps: int, times: LongTensor, values: LongTensor):
+                 rest_timesteps: int | LongTensor, times: LongTensor, values: LongTensor, copy: bool = True):
         device = terrains.device
-        self.terrains = terrains.clone().to(device)
-        self.items = items.clone().to(device)
-        self.soup_count_down = soup_count_down.clone().to(device)
-        self.player1_item = player1_item.clone().to(device)
-        self.player2_item = player2_item.clone().to(device)
-        self.player1_position = player1_position.clone().to(device)
-        self.player2_position = player2_position.clone().to(device)
-        self.player1_direction = player1_direction.clone().to(device)
-        self.player2_direction = player2_direction.clone().to(device)
-        self.rest_timesteps = rest_timesteps
-        self.times = times.clone().to(device)
-        self.values = values.clone().to(device)
+        B = terrains.shape[0]
+        if copy:
+            self.terrains = terrains.clone().to(device)                     # (B, H, W)
+            self.items = items.clone().to(device)                           # (B, 3, H, W)
+            self.soup_count_down = soup_count_down.clone().to(device)       # (B, H, W)
+            self.player1_item = player1_item.clone().to(device)             # (B, 3)
+            self.player2_item = player2_item.clone().to(device)             # (B, 3)
+            self.player1_position = player1_position.clone().to(device)     # (B, 2)
+            self.player2_position = player2_position.clone().to(device)     # (B, 2)
+            self.player1_direction = player1_direction.clone().to(device)   # (B, 2)
+            self.player2_direction = player2_direction.clone().to(device)   # (B, 2)
+            self.rest_timesteps = torch.full((B,), fill_value=rest_timesteps, dtype=torch.long, device=device) if isinstance(rest_timesteps, int) else rest_timesteps.clone().to(device) # (B,)
+            self.times = times.clone().to(device) if times.shape[0] == B else times.to(device).unsqueeze(0).expand(B, -1, -1)       # (B, 4, 4)
+            self.values = values.clone().to(device) if values.shape[0] == B else values.to(device).unsqueeze(0).expand(B, -1, -1)   # (B, 4, 4)
+        else:
+            self.terrains = terrains.to(device)
+            self.items = items.to(device)
+            self.soup_count_down = soup_count_down.to(device)
+            self.player1_item = player1_item.to(device)
+            self.player2_item = player2_item.to(device)
+            self.player1_position = player1_position.to(device)
+            self.player2_position = player2_position.to(device)
+            self.player1_direction = player1_direction.to(device)
+            self.player2_direction = player2_direction.to(device)
+            self.rest_timesteps = torch.tensor([rest_timesteps], dtype=torch.long, device=device) if isinstance(rest_timesteps, int) else rest_timesteps.to(device)
+            self.times = times.to(device) if times.shape[0] == B else times.to(device).unsqueeze(0).expand(B, -1, -1)
+            self.values = values.to(device) if values.shape[0] == B else values.to(device).unsqueeze(0).expand(B, -1, -1)
 
     def to(self, device: torch.device) -> Self:
         self.terrains = self.terrains.to(device)
@@ -42,14 +57,45 @@ class TensorState:
         self.player2_position = self.player2_position.to(device)
         self.player1_direction = self.player1_direction.to(device)
         self.player2_direction = self.player2_direction.to(device)
+        self.rest_timesteps = self.rest_timesteps.to(device)
         self.times = self.times.to(device)
         self.values = self.values.to(device)
         return self
-
     def cpu(self) -> Self: return self.to(torch.device('cpu'))
     def cuda(self) -> Self: return self.to(torch.device('cuda'))
-
     def clone(self) -> 'TensorState': return TensorState(self.terrains, self.items, self.soup_count_down, self.player1_item, self.player2_item, self.player1_position, self.player2_position, self.player1_direction, self.player2_direction, self.rest_timesteps, self.times, self.values)
+    def __len__(self) -> int: return len(self.terrains)
+
+    @staticmethod
+    def concat(states: List['TensorState']) -> 'TensorState':
+        all_terrains = torch.cat([state.terrains for state in states], dim=0)
+        all_items = torch.cat([state.items for state in states], dim=0)
+        all_soup_count_down = torch.cat([state.soup_count_down for state in states], dim=0)
+        all_player1_item = torch.cat([state.player1_item for state in states], dim=0)
+        all_player2_item = torch.cat([state.player2_item for state in states], dim=0)
+        all_player1_position = torch.cat([state.player1_position for state in states], dim=0)
+        all_player2_position = torch.cat([state.player2_position for state in states], dim=0)
+        all_player1_direction = torch.cat([state.player1_direction for state in states], dim=0)
+        all_player2_direction = torch.cat([state.player2_direction for state in states], dim=0)
+        all_rest_timesteps = torch.cat([state.rest_timesteps for state in states], dim=0)
+        all_times = torch.cat([state.times for state in states], dim=0)
+        all_values = torch.cat([state.values for state in states], dim=0)
+        return TensorState(all_terrains, all_items, all_soup_count_down, all_player1_item, all_player2_item, all_player1_position, all_player2_position, all_player1_direction, all_player2_direction, all_rest_timesteps, all_times, all_values, copy=False)
+
+    def __getitem__(self, any_indices) -> 'TensorState':
+        terrains = self.terrains[any_indices]
+        items = self.items[any_indices]
+        soup_count_down = self.soup_count_down[any_indices]
+        player1_item = self.player1_item[any_indices]
+        player2_item = self.player2_item[any_indices]
+        player1_position = self.player1_position[any_indices]
+        player2_position = self.player2_position[any_indices]
+        player1_direction = self.player1_direction[any_indices]
+        player2_direction = self.player2_direction[any_indices]
+        rest_timesteps = self.rest_timesteps[any_indices]
+        times = self.times[any_indices]
+        values = self.values[any_indices]
+        return TensorState(terrains, items, soup_count_down, player1_item, player2_item, player1_position, player2_position, player1_direction, player2_direction, rest_timesteps, times, values, copy=False)
 
 
 class ParallelState(nn.Module):

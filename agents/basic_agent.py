@@ -13,20 +13,22 @@ from env.constants.actions import all_action_ids
 
 class ReplayBuffer:
     def __init__(self, capacity: int = 256):
-        self.buffer: Deque[Tuple[List[TensorState], List[LongTensor], List[LongTensor]]] = deque(maxlen=capacity)
+        self.buffer: Deque[Tuple[TensorState, LongTensor, LongTensor]] = deque(maxlen=capacity)
 
-    def push(self, states: List[TensorState], actions: List[LongTensor], rewards: List[LongTensor]) -> None:
+    def push(self, states: TensorState, actions: LongTensor, rewards: LongTensor) -> None:
         horizon = len(actions)
         assert len(rewards) == horizon
-        assert len(states) == horizon + 1
+        assert len(states) == horizon
         self.buffer.append((states, actions, rewards))
 
-    def sample(self, num_samples: int) -> List[Tuple[List[TensorState], List[LongTensor], List[LongTensor]]]:
+    def sample(self, num_samples: int) -> List[Tuple[TensorState, LongTensor, LongTensor]]:
         samples = random.sample(self.buffer, num_samples)
         return samples
 
 class BaseAgent(ABC):
-    def __init__(self, buffer_capacity: int = 1024, num_samples: int = 8, num_action_classes: int = len(all_action_ids)):
+    def __init__(self, buffer_capacity: int = 1024, num_samples: int = 8, batch_size: int = 256, horizon: int = 400, num_action_classes: int = len(all_action_ids)):
+        self.batch_size = batch_size
+        self.horizon = horizon
         self.num_action_classes = num_action_classes
         self.num_joint_actions = num_action_classes * num_action_classes
         self.num_samples = num_samples
@@ -58,28 +60,24 @@ class BaseAgent(ABC):
     @torch.no_grad()
     def collect_trajectory(self, environment: ParallelEnvironment) -> float:
         self.eval()
-        state = environment.state.to_tensor(environment.timestep)
-        states_list: List[TensorState] = [state.clone().cpu()]
-        actions_list: List[LongTensor] = []
-        rewards_list: List[LongTensor] = []
+        states_list: List[TensorState] = []
+        actions_list: List[Tensor] = []
+        rewards_list: List[Tensor] = []
         avg_reward_list: List[float] = []
         done = False
         while not done:
+            state = environment.state.to_tensor(environment.timestep)
+            states_list.append(state.clone())
             actions = self.select_actions(state, False)
             action1 = actions // self.num_action_classes
             action2 = actions % self.num_action_classes
-            done, reward1, reward2, next_state = environment.step(action1, action2)
-            total_rewards = reward1 + reward2
-            avg_reward_list.append(total_rewards.float().mean().item())
-            state = next_state.to_tensor(environment.timestep)
-            state_cpu = state.clone().cpu()
-            actions_cpu = actions.cpu()
-            rewards_cpu = total_rewards.cpu()
-            states_list.append(state_cpu)
-            actions_list.append(actions_cpu)
-            rewards_list.append(rewards_cpu)
-        self.buffer.push(states_list, actions_list, rewards_list)
-        return sum(avg_reward_list) / len(avg_reward_list)
+            done, reward1, reward2, shaped_reward1, shaped_reward2, next_state = environment.step(action1, action2)
+            total_rewards = (reward1 + reward2 + shaped_reward1 + shaped_reward2).float()
+            avg_reward_list.append(total_rewards.mean().item())
+            actions_list.append(actions)
+            rewards_list.append(total_rewards)
+        self.buffer.push(TensorState.concat(states_list).cpu(), torch.cat(actions_list, dim=0).cpu(), torch.cat(rewards_list, dim=0).cpu())
+        return sum(avg_reward_list)
 
     @abstractmethod
     def train_step(self) -> float: pass

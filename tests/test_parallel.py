@@ -256,8 +256,8 @@ def test_layout(layout_name: str = SIMPLE_O, seed: int = 137, batch_size: int = 
     return True
 
 
-# test_layout('limited_0', seed=40000)
-# exit()
+test_layout('limited_0', seed=40000)
+exit()
 
 for layout_name in all_available_layouts:
     same = test_layout(layout_name)

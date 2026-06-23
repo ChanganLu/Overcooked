@@ -64,7 +64,7 @@ class MLP(nn.Module):
         return self.mlp(tensor)
 
 class StateEncoder(nn.Module):
-    def __init__(self, timestep_scale: float = 0.0025, time_scale: float = 0.05, value_scale: float = 0.05, max_ingredients: float = 3.0):
+    def __init__(self, timestep_scale: float = 0.0025, time_scale: float = 0.01, value_scale: float = 0.01, max_ingredients: float = 3.0):
         super().__init__()
         self.timestep_scale = timestep_scale
         self.time_scale = time_scale
@@ -114,10 +114,12 @@ class StateEncoder(nn.Module):
         player_onion_and_tomato_encoded = player_items[:, [1, 2, 4, 5]] / self.max_ingredients # (B, 4, H, W)
         encoded_2d = torch.cat([player_one_hot, terrain_one_hot, items_one_hot, player_items_one_hot, soup_idle_one_hot, soup_count_down_encoded, onion_and_tomato_encoded, player_onion_and_tomato_encoded], dim=1) # (B, 34, H, W)
 
-        rest_timesteps = torch.tensor([state.rest_timesteps * self.timestep_scale], dtype=torch.float, device=device) # (1,)
-        times = state.times.float().flatten() * self.time_scale # (16,)
-        values = state.values.float().flatten() * self.value_scale # (16,)
-        encoded_1d = torch.cat([rest_timesteps, times, values], dim=0) # (33,)
+        rest_timesteps = state.rest_timesteps.float().unsqueeze(1) * self.timestep_scale # (B, 1)
+        times = state.times.float().flatten(1) * self.time_scale # (B, 16)
+        values = state.values.float().flatten(1) * self.value_scale # (B, 16)
+        # print(rest_timesteps.shape, times.shape, values.shape)
+        # print(rest_timesteps.device, times.device, values.device)
+        encoded_1d = torch.cat([rest_timesteps, times, values], dim=1) # (B, 33)
 
         return encoded_2d, encoded_1d
 

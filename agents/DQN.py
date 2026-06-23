@@ -92,6 +92,8 @@ class DQNAgent(BaseAgent):
                 sample_loss += loss_item / horizon
                 pbar.set_description(f'Training Network [Loss = {loss_item:9.6f}]')
                 pbar.update()
+                
+                states = next_states
             
             self.update_counter += 1
             if self.update_counter % self.target_update == 0:

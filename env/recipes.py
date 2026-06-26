@@ -23,8 +23,8 @@ class SoupCookingTime(nn.Module):
         if recipe_times is None or len(recipe_times) == 0:
             self.recipe_times = None
         else:
-            recipes = torch.tensor(tuple(recipe_times.keys()), dtype=torch.long)
-            times = torch.tensor(tuple(recipe_times.values()), dtype=torch.long)
+            recipes = torch.tensor(tuple(recipe_times.keys()), dtype=torch.int)
+            times = torch.tensor(tuple(recipe_times.values()), dtype=torch.int)
             M = recipes.max().item() + 1
             recipes_encoded = recipes[:, 0] * M + recipes[:, 1]
             indices = torch.argsort(recipes_encoded)
@@ -49,8 +49,8 @@ class SoupCookingTime(nn.Module):
         device = recipes.device
         B, _ = recipes.shape # (B, 2)
         if self.cook_time is not None:
-            return torch.full((B,), fill_value=self.cook_time, dtype=torch.long, device=device)
-        times = torch.full((B,), fill_value=self.default_time, dtype=torch.long, device=device)
+            return torch.full((B,), fill_value=self.cook_time, dtype=torch.int, device=device)
+        times = torch.full((B,), fill_value=self.default_time, dtype=torch.int, device=device)
         remain_mask = torch.ones((B,), dtype=torch.bool, device=device)
         if self.recipe_times is not None:
             recipes_encoded = recipes[:, 0] * self.M + recipes[:, 1] # (B,)
@@ -80,8 +80,8 @@ class SoupCookingTime(nn.Module):
 
     def to_tensor(self) -> LongTensor:
         M = self.max_ingredients + 1
-        if self.cook_time is not None: return torch.full((M, M), fill_value=self.cook_time, dtype=torch.long)
-        recipe_times = torch.full((M, M), fill_value=self.default_time, dtype=torch.long)
+        if self.cook_time is not None: return torch.full((M, M), fill_value=self.cook_time, dtype=torch.int)
+        recipe_times = torch.full((M, M), fill_value=self.default_time, dtype=torch.int)
         filled = torch.zeros((M, M), dtype=torch.bool)
         if self.recipe_times is not None:
             recipes = self.recipes.tolist()
@@ -90,8 +90,8 @@ class SoupCookingTime(nn.Module):
                 recipe_times[num_onion, num_tomato] = t
                 filled[num_onion, num_tomato] = True
         if self.onion_time is not None and self.tomato_time is not None:
-            onion_times = torch.arange(0, M).view(M, 1) * self.onion_time
-            tomato_times = torch.arange(0, M).view(1, M) * self.tomato_time
+            onion_times = torch.arange(0, M, dtype=torch.int).view(M, 1) * self.onion_time
+            tomato_times = torch.arange(0, M, dtype=torch.int).view(1, M) * self.tomato_time
             ingredient_times = onion_times + tomato_times
             recipe_times[~filled] = ingredient_times[~filled]
         return recipe_times
@@ -115,8 +115,8 @@ class SoupReward(nn.Module):
         if recipe_values is None or len(recipe_values) == 0:
             self.recipe_values = None
         else:
-            recipes = torch.tensor(tuple(recipe_values.keys()), dtype=torch.long)
-            values = torch.tensor(tuple(recipe_values.values()), dtype=torch.long)
+            recipes = torch.tensor(tuple(recipe_values.keys()), dtype=torch.int)
+            values = torch.tensor(tuple(recipe_values.values()), dtype=torch.int)
             M = recipes.max().item() + 1
             recipes_encoded = recipes[:, 0] * M + recipes[:, 1]
             indices = torch.argsort(recipes_encoded)
@@ -139,8 +139,8 @@ class SoupReward(nn.Module):
         device = recipes.device
         B = recipes.shape[0]
         if self.delivery_reward is not None:
-            return torch.full((B,), fill_value=self.delivery_reward, dtype=torch.long, device=device)
-        values = torch.full((B,), fill_value=self.default_value, dtype=torch.long, device=device)
+            return torch.full((B,), fill_value=self.delivery_reward, dtype=torch.int, device=device)
+        values = torch.full((B,), fill_value=self.default_value, dtype=torch.int, device=device)
         if self.recipe_values is not None:
             recipes_encoded = recipes[:, 0] * self.M + recipes[:, 1]  # (B,)
             indices = torch.searchsorted(self.recipes_encoded, recipes_encoded)  # (B,)
@@ -152,8 +152,8 @@ class SoupReward(nn.Module):
 
     def to_tensor(self) -> LongTensor:
         M = self.max_ingredients + 1
-        if self.delivery_reward is not None: return torch.full((M, M), fill_value=self.delivery_reward, dtype=torch.long)
-        recipe_values = torch.zeros((M, M), dtype=torch.long)
+        if self.delivery_reward is not None: return torch.full((M, M), fill_value=self.delivery_reward, dtype=torch.int)
+        recipe_values = torch.zeros((M, M), dtype=torch.int)
         if self.recipe_values is not None:
             recipes = self.recipes.tolist()
             times = self.recipe_values.tolist()

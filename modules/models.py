@@ -7,6 +7,8 @@ from env.state import TensorState
 from env.constants.items import all_items, ITEM_EMPTY
 from env.constants.terrains import all_terrains
 
+from time import sleep
+
 
 class ResBlock(nn.Module):
     def __init__(self, in_channels: int, out_channels: int, kernel_size: int = 3, stride: int = 1):
@@ -19,6 +21,8 @@ class ResBlock(nn.Module):
             self.res = nn.Identity()
         else:
             self.res = nn.Conv2d(in_channels, out_channels, 1, stride, 0)
+        # self.bn1 = nn.Identity()
+        # self.bn2 = nn.Identity()
         self.bn1 = nn.BatchNorm2d(out_channels)
         self.bn2 = nn.BatchNorm2d(out_channels)
         self.relu = nn.ReLU()
@@ -36,7 +40,8 @@ class ResNet(nn.Module):
 
         layers: List[nn.Module] = []
         for i in range(1, len(channels)):
-            layers.append(ResBlock(channels[i - 1], channels[i]))
+            layers.append(ResBlock(channels[i - 1], channels[i], 3, 2))
+            layers.append(ResBlock(channels[i], channels[i], 3, 1))
         self.cnn = nn.Sequential(*layers)
 
     def forward(self, tensor: Tensor) -> Tensor:
@@ -64,7 +69,7 @@ class MLP(nn.Module):
         return self.mlp(tensor)
 
 class StateEncoder(nn.Module):
-    def __init__(self, timestep_scale: float = 0.0025, time_scale: float = 0.01, value_scale: float = 0.01, max_ingredients: float = 3.0):
+    def __init__(self, timestep_scale: float = 0.0025, time_scale: float = 0.01, value_scale: float = 0.05, max_ingredients: float = 3.0):
         super().__init__()
         self.timestep_scale = timestep_scale
         self.time_scale = time_scale
@@ -88,26 +93,26 @@ class StateEncoder(nn.Module):
 
         B, H, W = terrains.shape
         device = terrains.device
-        arange = torch.arange(0, B, dtype=torch.long, device=device)
+        arange = torch.arange(0, B, dtype=torch.int, device=device)
 
         x1, y1 = player1_positions[:, 0], player1_positions[:, 1]
         x2, y2 = player2_positions[:, 0], player2_positions[:, 1]
         fx1, fy1 = x1 + player1_directions[:, 0], y1 + player1_directions[:, 1]
         fx2, fy2 = x2 + player2_directions[:, 0], y2 + player2_directions[:, 1]
-
+        
         player_one_hot = torch.zeros((B, 4, H, W), dtype=torch.float, device=device) # (B, 4, H, W)
         player_one_hot[arange, 0, y1, x1] = 1.0
         player_one_hot[arange, 1, y2, x2] = 1.0
         player_one_hot[arange, 2, fy1, fx1] = 1.0
         player_one_hot[arange, 3, fy2, fx2] = 1.0
 
-        player_items = torch.full((B, 6, H, W), fill_value=ITEM_EMPTY, dtype=torch.long, device=device)
+        player_items = torch.full((B, 6, H, W), fill_value=ITEM_EMPTY, dtype=torch.int, device=device)
         player_items[arange, :3, y1, x1] = player1_items
         player_items[arange, 3:, y2, x2] = player2_items
 
-        terrain_one_hot = F.one_hot(terrains, num_terrain_cls).float().permute(0, 3, 1, 2) # (B, 7, H, W)
-        items_one_hot = F.one_hot(items[:, 0], num_item_cls).float().permute(0, 3, 1, 2) # (B, 5, H, W)
-        player_items_one_hot = F.one_hot(player_items[:, [0, 3]], num_item_cls).float().permute(0, 1, 4, 2, 3).reshape(B, 2 * num_item_cls, H, W) # (B, 10, H, W)
+        terrain_one_hot = F.one_hot(terrains.long(), num_terrain_cls).float().permute(0, 3, 1, 2) # (B, 7, H, W)
+        items_one_hot = F.one_hot(items[:, 0].long(), num_item_cls).float().permute(0, 3, 1, 2) # (B, 5, H, W)
+        player_items_one_hot = F.one_hot(player_items[:, [0, 3]].long(), num_item_cls).float().permute(0, 1, 4, 2, 3).reshape(B, 2 * num_item_cls, H, W) # (B, 10, H, W)
         soup_idle_one_hot = (soup_count_down < 0).float().unsqueeze(1) # (B, 1, H, W)
         soup_count_down_encoded = soup_count_down.clamp_min(0).float().unsqueeze(1) / self.time_scale # (B, 1, H, W)
         onion_and_tomato_encoded = items[:, 1:] / self.max_ingredients # (B, 2, H, W)

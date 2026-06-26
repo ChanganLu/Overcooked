@@ -19,7 +19,7 @@ from env.constants.terrains import all_terrains
 from env.constants.items import all_items
 
 from env.recipes import SoupCookingTime, SoupReward
-from env.state import ParallelState
+from env.state import ParallelState, TensorState
 
 class ParallelEnvironment:
     def __init__(self, layout_name: str, batch_size: int = 64, horizon: int = 400, enable_reward_shaping: bool = False, device: torch.device = device, autocast: torch.amp.autocast = autocast):
@@ -33,12 +33,21 @@ class ParallelEnvironment:
         self.horizon = horizon
         self.device = device
         self.autocast = autocast
+        self.enable_reward_shaping = enable_reward_shaping
 
         terrain, soup_cooking_time, soup_reward = self.load_layout(layout_name)
         self.state = ParallelState(batch_size, terrain, soup_cooking_time, soup_reward, enable_reward_shaping).to(device)
+        self.H = self.state.H
+        self.W = self.state.W
 
         self.max_ingredients = self.state.soup_cooking_time.max_ingredients
         self.timestep = horizon
+
+    def reset(self) -> TensorState:
+        self.timestep = self.horizon
+        terrain, soup_cooking_time, soup_reward = self.load_layout(self.layout_name)
+        self.state = ParallelState(self.batch_size, terrain, soup_cooking_time, soup_reward, self.enable_reward_shaping).to(self.device)
+        return self.state.to_tensor(self.timestep)
 
     def read_layout_dict(self, layout_name) -> Dict:
         layout_path = os.path.join(LAYOUT_DIR, f'{layout_name}.layout')
@@ -55,7 +64,7 @@ class ParallelEnvironment:
     def parse_grid(self, grid_str: str) -> LongTensor:
         rows: List[List[str]] = [list(row.strip()) for row in grid_str.strip().split('\n')]
         H, W = len(rows), len(rows[0])
-        terrain_map = torch.zeros((H, W), dtype=torch.long)
+        terrain_map = torch.zeros((H, W), dtype=torch.int)
         for i, row in enumerate(rows):
             for j, ch in enumerate(row):
                 terrain_map[i, j] = all_terrains.get(ch)
@@ -125,7 +134,7 @@ class ParallelEnvironment:
         return soup_cooking_time, soup_reward
 
     @torch.no_grad()
-    def step(self, player1_action: LongTensor, player2_action: LongTensor) -> Tuple[bool, LongTensor, LongTensor, LongTensor, LongTensor, ParallelState]:
+    def step(self, player1_action: LongTensor, player2_action: LongTensor) -> Tuple[bool, LongTensor, LongTensor, LongTensor, LongTensor, TensorState]:
         player1_interact = (player1_action == ACTION_INTERACT)
         player2_interact = (player2_action == ACTION_INTERACT)
         player1_reward, player2_reward, player1_shaped_reward, player2_shaped_reward = self.state.interact(player1_interact, player2_interact)
@@ -133,5 +142,5 @@ class ParallelEnvironment:
         self.state.soup_cook()
         self.timestep -= 1
         done = (self.timestep <= 0)
-        return done, player1_reward, player2_reward, player1_shaped_reward, player2_shaped_reward, self.state
+        return done, player1_reward, player2_reward, player1_shaped_reward, player2_shaped_reward, self.state.to_tensor(self.timestep)
 

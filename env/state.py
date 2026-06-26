@@ -1,15 +1,17 @@
 import torch
 from torch import nn, Tensor, LongTensor, BoolTensor
+from torch.nn import functional as F
 from typing import List, Tuple, Dict, Optional, Literal, Self
 from dataclasses import dataclass
 
 from env.recipes import SoupCookingTime, SoupReward
 
-
 from env.constants.terrains import TERRAIN_PLAYER_1, TERRAIN_PLAYER_2, TERRAIN_EMPTY, TERRAIN_COUNTER, TERRAIN_ONION_DISP, TERRAIN_TOMATO_DISP, TERRAIN_DISH_DISP, TERRAIN_POT, TERRAIN_SERVE
 from env.constants.items import ITEM_EMPTY, ITEM_ONION, ITEM_TOMATO, ITEM_DISH, ITEM_SOUP
 from env.constants.actions import ACTION_NORTH, ACTION_SOUTH, ACTION_EAST, ACTION_WEST, ACTION_STAY, ACTION_INTERACT # 0, 1, 2, 3, 4, 5
 from env.constants.actions import NORTH, SOUTH, EAST, WEST, STAY # (0, -1), (0, 1), (1, 0), (-1, 0), (0, 0)
+
+from env.constants.size import MAX_H, MAX_W
 
 
 
@@ -30,9 +32,9 @@ class TensorState:
             self.player2_position = player2_position.clone().to(device)     # (B, 2)
             self.player1_direction = player1_direction.clone().to(device)   # (B, 2)
             self.player2_direction = player2_direction.clone().to(device)   # (B, 2)
-            self.rest_timesteps = torch.full((B,), fill_value=rest_timesteps, dtype=torch.long, device=device) if isinstance(rest_timesteps, int) else rest_timesteps.clone().to(device) # (B,)
-            self.times = times.clone().to(device) if times.shape[0] == B else times.to(device).unsqueeze(0).expand(B, -1, -1)       # (B, 4, 4)
-            self.values = values.clone().to(device) if values.shape[0] == B else values.to(device).unsqueeze(0).expand(B, -1, -1)   # (B, 4, 4)
+            self.rest_timesteps = torch.full((B,), fill_value=rest_timesteps, dtype=torch.int, device=device) if isinstance(rest_timesteps, int) else rest_timesteps.clone().to(device) # (B,)
+            self.times = times.clone().to(device) if times.shape[0] == B else times.to(device).unsqueeze(0).expand(B, -1, -1).clone()       # (B, 4, 4)
+            self.values = values.clone().to(device) if values.shape[0] == B else values.to(device).unsqueeze(0).expand(B, -1, -1).clone()   # (B, 4, 4)
         else:
             self.terrains = terrains.to(device)
             self.items = items.to(device)
@@ -43,9 +45,9 @@ class TensorState:
             self.player2_position = player2_position.to(device)
             self.player1_direction = player1_direction.to(device)
             self.player2_direction = player2_direction.to(device)
-            self.rest_timesteps = torch.tensor([rest_timesteps], dtype=torch.long, device=device) if isinstance(rest_timesteps, int) else rest_timesteps.to(device)
-            self.times = times.to(device) if times.shape[0] == B else times.to(device).unsqueeze(0).expand(B, -1, -1)
-            self.values = values.to(device) if values.shape[0] == B else values.to(device).unsqueeze(0).expand(B, -1, -1)
+            self.rest_timesteps = torch.tensor([rest_timesteps], dtype=torch.int, device=device) if isinstance(rest_timesteps, int) else rest_timesteps.to(device)
+            self.times = times.to(device) if times.shape[0] == B else times.to(device).unsqueeze(0).expand(B, -1, -1).clone()
+            self.values = values.to(device) if values.shape[0] == B else values.to(device).unsqueeze(0).expand(B, -1, -1).clone()
 
     def to(self, device: torch.device) -> Self:
         self.terrains = self.terrains.to(device)
@@ -65,6 +67,14 @@ class TensorState:
     def cuda(self) -> Self: return self.to(torch.device('cuda'))
     def clone(self) -> 'TensorState': return TensorState(self.terrains, self.items, self.soup_count_down, self.player1_item, self.player2_item, self.player1_position, self.player2_position, self.player1_direction, self.player2_direction, self.rest_timesteps, self.times, self.values)
     def __len__(self) -> int: return len(self.terrains)
+
+    def pad_(self) -> Self:
+        B, H, W = self.terrains.shape
+        pad = (0, MAX_W - W, 0, MAX_H - H)
+        self.terrains = F.pad(self.terrains, pad, mode='constant', value=0)
+        self.items = F.pad(self.items, pad, mode='constant', value=0)
+        self.soup_count_down = F.pad(self.soup_count_down, pad, mode='constant', value=0)
+        return self
 
     @staticmethod
     def concat(states: List['TensorState']) -> 'TensorState':
@@ -118,25 +128,25 @@ class ParallelState(nn.Module):
         terrain[player1_position[1], player1_position[0]] = TERRAIN_EMPTY
         terrain[player2_position[1], player2_position[0]] = TERRAIN_EMPTY
 
-        self.terrains           = nn.Parameter(terrain.unsqueeze(0).expand(B, -1, -1), requires_grad=False)
+        self.terrains           = nn.Parameter(terrain.unsqueeze(0).expand(B, -1, -1).clone(), requires_grad=False)
         '''(B, H, W)'''
-        self.items              = nn.Parameter(torch.zeros((B, 3, H, W), dtype=torch.long), requires_grad=False)
+        self.items              = nn.Parameter(torch.zeros((B, 3, H, W), dtype=torch.int), requires_grad=False)
         '''(B, 3, H, W), 分别为物品 ID, 洋葱数量, 番茄数量'''
         self.soup_count_down    = nn.Parameter(torch.full_like(self.terrains, fill_value=-1), requires_grad=False)
         '''(B, H, W), -1 表示未开始烹饪, 0 表示完成烹饪, 正整数表示烹饪剩余时间'''
-        self.player1_item       = nn.Parameter(torch.zeros((B, 3), dtype=torch.long), requires_grad=False)
+        self.player1_item       = nn.Parameter(torch.zeros((B, 3), dtype=torch.int), requires_grad=False)
         '''(B, 3)'''
-        self.player2_item       = nn.Parameter(torch.zeros((B, 3), dtype=torch.long), requires_grad=False)
+        self.player2_item       = nn.Parameter(torch.zeros((B, 3), dtype=torch.int), requires_grad=False)
         '''(B, 3)'''
-        self.player1_position   = nn.Parameter(torch.tensor([player1_position], dtype=torch.long).expand(B, -1), requires_grad=False)
+        self.player1_position   = nn.Parameter(torch.tensor([player1_position], dtype=torch.int).expand(B, -1).clone(), requires_grad=False)
         '''(B, 2)'''
-        self.player2_position   = nn.Parameter(torch.tensor([player2_position], dtype=torch.long).expand(B, -1), requires_grad=False)
+        self.player2_position   = nn.Parameter(torch.tensor([player2_position], dtype=torch.int).expand(B, -1).clone(), requires_grad=False)
         '''(B, 2)'''
-        self.player1_direction  = nn.Parameter(torch.tensor([NORTH], dtype=torch.long).expand(B, -1), requires_grad=False)
+        self.player1_direction  = nn.Parameter(torch.tensor([NORTH], dtype=torch.int).expand(B, -1).clone(), requires_grad=False)
         '''(B, 2)'''
-        self.player2_direction  = nn.Parameter(torch.tensor([NORTH], dtype=torch.long).expand(B, -1), requires_grad=False)
+        self.player2_direction  = nn.Parameter(torch.tensor([NORTH], dtype=torch.int).expand(B, -1).clone(), requires_grad=False)
         '''(B, 2)'''
-        self.action_directions  = nn.Parameter(torch.tensor([NORTH, SOUTH, EAST, WEST, STAY, STAY], dtype=torch.long), requires_grad=False)
+        self.action_directions  = nn.Parameter(torch.tensor([NORTH, SOUTH, EAST, WEST, STAY, STAY], dtype=torch.int), requires_grad=False)
         '''(6, 2)'''
 
         self.soup_cooking_time = soup_cooking_time
@@ -144,7 +154,7 @@ class ParallelState(nn.Module):
 
     @torch.no_grad()
     def player_move(self, player1_action: LongTensor, player2_action: LongTensor) -> None:
-        arange = torch.arange(0, len(player1_action), dtype=torch.long, device=player1_action.device)
+        arange = torch.arange(0, len(player1_action), dtype=torch.int, device=player1_action.device)
         player1_move_mask = player1_action <= ACTION_WEST
         player2_move_mask = player2_action <= ACTION_WEST
 
@@ -180,8 +190,8 @@ class ParallelState(nn.Module):
         B = len(player1_interact)
         items_clone = self.items.clone() # 官方版本在计算玩家 2 拿起盘子是否有用时, 判定空锅仍然使用玩家 1 交互前的锅的状态, 此处选择尊重原版
         # 先处理玩家 1 的交互
-        player1_reward = torch.zeros((B,), dtype=torch.long, device=device)
-        player1_shaped_reward = torch.zeros((B,), dtype=torch.long, device=device)
+        player1_reward = torch.zeros((B,), dtype=torch.int, device=device)
+        player1_shaped_reward = torch.zeros((B,), dtype=torch.int, device=device)
         if player1_interact.any():
             player_front = self.player1_position[player1_interact] + self.player1_direction[player1_interact] # (I, 2)
             player_front_terrain = self.terrains[player1_interact, player_front[:, 1], player_front[:, 0]] # (I,)
@@ -222,7 +232,7 @@ class ParallelState(nn.Module):
                         item_grid = items_clone[player1_interact][player_empty_mask] # (E, 3, H, W)
                         soup_grid = self.soup_count_down[player1_interact][player_empty_mask] # (E, H, W)
                         no_dish_on_counter_mask = ((item_grid[:, 0] == ITEM_DISH).count_nonzero(dim=(1, 2)) == 0) # (E,)
-                        player2_holding_dish_mask = (self.player2_item[player1_interact, 0][player_empty_mask] == ITEM_DISH).long() # (E,)
+                        player2_holding_dish_mask = (self.player2_item[player1_interact, 0][player_empty_mask] == ITEM_DISH).int() # (E,)
                         is_pot_mask = (self.terrains[player1_interact][player_empty_mask] == TERRAIN_POT) # (E, H, W)
                         pot_cooking_or_ready_mask = (soup_grid >= 0) # (E, H, W)
                         num_ingredients_in_pot = item_grid[:, 1:].sum(dim=1) # (E, H, W)
@@ -317,8 +327,8 @@ class ParallelState(nn.Module):
             player1_reward[player1_interact] = player_rewards
             player1_shaped_reward[player1_interact] = player_shaped_rewards
         # 再处理玩家 2 的交互
-        player2_reward = torch.zeros((B,), dtype=torch.long, device=device)
-        player2_shaped_reward = torch.zeros((B,), dtype=torch.long, device=device)
+        player2_reward = torch.zeros((B,), dtype=torch.int, device=device)
+        player2_shaped_reward = torch.zeros((B,), dtype=torch.int, device=device)
         if player2_interact.any():
             player_front = self.player2_position[player2_interact] + self.player2_direction[player2_interact] # (I, 2)
             player_front_terrain = self.terrains[player2_interact, player_front[:, 1], player_front[:, 0]] # (I,)
@@ -358,7 +368,7 @@ class ParallelState(nn.Module):
                     if self.enable_reward_shaping:
                         soup_grid = self.soup_count_down[player2_interact][player_empty_mask] # (E, H, W)
                         no_dish_on_counter_mask = ((self.items[player2_interact, 0][player_empty_mask] == ITEM_DISH).count_nonzero(dim=(1, 2)) == 0) # (E,)
-                        player1_holding_dish_mask = (self.player1_item[player2_interact, 0][player_empty_mask] == ITEM_DISH).long() # (E,)
+                        player1_holding_dish_mask = (self.player1_item[player2_interact, 0][player_empty_mask] == ITEM_DISH).int() # (E,)
                         is_pot_mask = (self.terrains[player2_interact][player_empty_mask] == TERRAIN_POT) # (E, H, W)
                         pot_cooking_or_ready_mask = (soup_grid >= 0) # (E, H, W)
                         num_ingredients_in_pot = items_clone[player2_interact, 1:][player_empty_mask].sum(dim=1) # (E, H, W)

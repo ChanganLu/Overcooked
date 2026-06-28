@@ -1,5 +1,6 @@
 # layout dir
-LAYOUT_DIR = 'D:/Anaconda/ANACONDA/envs/MultiAgent/Lib/site-packages/overcooked_ai_py/data/layouts'
+# LAYOUT_DIR = 'D:/Anaconda/ANACONDA/envs/MultiAgent/Lib/site-packages/overcooked_ai_py/data/layouts'
+LAYOUT_DIR = './layouts'
 
 # layouts
 ASYMMETRIC_ADVANTAGES                   = 'asymmetric_advantages'
